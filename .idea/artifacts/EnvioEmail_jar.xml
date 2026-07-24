@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="EnvioEmail:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/EnvioEmail_jar</output-path>
+    <root id="archive" name="EnvioEmail.jar">
+      <element id="module-output" name="EnvioEmail" />
+    </root>
+  </artifact>
+</component>
