@@ -16,16 +16,38 @@ import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 
+/**
+ * Classe responsável por intermediar a ação customizada de envio de e-mails
+ * disparada através de um Botão de Ação no sistema Sankhya-W.
+ *
+ * Atua como o Controlador (Controller) da operação, orquestrando as chamadas aos
+ * serviços de e-mail e de anexos para montar o registro na Fila de Mensagens (TMDFMG).
+ *
+ * @author Felipe Salles Lopes (felipe.lopes@sankhya.com.br)
+ */
 public class BotaoEnviaEmail implements AcaoRotinaJava {
 
     private final EmailService emailService = new EmailService();
     private final AnexoService anexoService = new AnexoService();
 
+    /**
+     * Ponto de entrada da rotina Java invocada pelo botão de ação.
+     * Realiza a extração dos dados da tela, validações, busca da conta SMTP,
+     * aplicação de modelos de e-mail pré-definidos e delega a criação das entidades
+     * no banco de dados.
+     *
+     * Ao final do processo, injeta um JSON no contexto da requisição com os IDs gerados
+     * e retorna uma mensagem de sucesso na interface do usuário.
+     *
+     * @param ctx O contexto da ação, contendo os registros selecionados na interface (grid/formulário) e ferramentas de query.
+     * @throws Exception Em caso de falha de validação dos dados de entrada, erros de banco de dados ou processamento de anexos.
+     */
     @Override
     public void doAction(ContextoAcao ctx) throws Exception {
         JapeSession.SessionHandle hnd = null;
 
         try {
+            // Abre uma sessão JAPE para garantir que todas as transações da thread ocorram no mesmo contexto
             hnd = JapeSession.open();
 
             // 1. Extração e validação do registro
@@ -70,17 +92,20 @@ public class BotaoEnviaEmail implements AcaoRotinaJava {
             jsonResponse.addProperty("CODFILA", codFila);
             jsonResponse.add("ANEXOS_CRIADOS", jsonArrayAnexos);
 
+            // 6. Atualiza o contexto web com o JSON de resposta (se aplicável)
             ServiceContext serviceCtx = ServiceContext.getCurrent();
             if (serviceCtx != null) {
                 serviceCtx.setJsonResponse(jsonResponse);
             }
 
+            // Envia o feedback visual de sucesso para o usuário do Sankhya
             ctx.setMensagemRetorno("E-mail preparado com sucesso! Cód. Fila: " + codFila);
 
         } catch (Exception e) {
-            e.printStackTrace();
-            throw new Exception(e.getMessage());
+            e.printStackTrace(); // Registra o log completo no standalone.log do servidor
+            throw new Exception(e.getMessage()); // Relança a exceção com a mensagem tratada para a interface
         } finally {
+            // Garante o fechamento seguro da sessão JAPE, prevenindo vazamentos de conexão
             JapeSession.close(hnd);
         }
     }
