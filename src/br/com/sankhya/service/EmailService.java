@@ -4,9 +4,16 @@ import br.com.sankhya.extensions.actionbutton.QueryExecutor;
 import br.com.sankhya.jape.vo.DynamicVO;
 import br.com.sankhya.jape.wrapper.JapeFactory;
 import br.com.sankhya.jape.wrapper.JapeWrapper;
+import br.com.sankhya.model.Anexo;
+import br.com.sankhya.model.ModeloEmail;
 import br.com.sankhya.modelcore.util.DynamicEntityNames;
+import br.com.sankhya.modelcore.util.EntityFacadeFactory;
+import br.com.sankhya.modelcore.util.email.FilaMsgUtil;
 
+import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Serviço responsável por encapsular as regras de negócio e as interações com o
@@ -18,6 +25,63 @@ import java.math.BigDecimal;
  * @author Felipe Salles Lopes (felipe.lopes@sankhya.com.br)
  */
 public class EmailService {
+
+    private final BlobService blobService = new BlobService();
+
+    /**
+     * Envia e-mail via API nativa do Sankhya (FilaMsgUtil), anexando os arquivos
+     * já sem o cabeçalho de metadados customizado.
+     *
+     * @param destinatarios E-mails dos destinatários (vários separados pelo separador aceito pelo FilaMsgUtil).
+     * @param modelo        Modelo de e-mail (assunto, conteúdo, SMTP, remetente).
+     * @param anexos        Lista de anexos (pode ser nula ou vazia).
+     * @throws Exception Em caso de falha na leitura dos anexos ou no envio.
+     */
+    public void enviarEmail(String destinatarios, ModeloEmail modelo, List<Anexo> anexos) throws Exception {
+        if (destinatarios == null || destinatarios.trim().isEmpty())
+            throw new Exception("Favor adicionar destinatário.");
+        if (modelo == null)
+            throw new Exception("Modelo de e-mail não encontrado.");
+
+        FilaMsgUtil.Email email = new FilaMsgUtil.Email();
+        email.setAssunto(modelo.getAssunto());
+        email.setMensagem(modelo.getConteudo());
+        email.setDestinatarios(destinatarios);
+
+        if (modelo.getCodSmtp() != null)
+            email.setContaSMTP(modelo.getCodSmtp());
+
+        if (modelo.getCodUsuRemet() != null)
+            email.setCodUsuRemet(modelo.getCodUsuRemet());
+
+        // Anexos são opcionais
+        if (anexos != null) {
+            // for tradicional: lambda não permite propagar a Exception checada do BlobService
+            for (Anexo anexo : anexos) {
+                if (anexo == null || anexo.getArquivo() == null)
+                    continue;
+
+                String nomeArquivo = anexo.getFileInfo() != null ? anexo.getFileInfo().getNome() : "nome_desconhecido";
+                String mimeType = anexo.getFileInfo() != null ? anexo.getFileInfo().getMimeType() : "application/octet-stream";
+
+                try {
+                    // Blob -> byte[] sem o cabeçalho __start/end_fileinformation__
+                    byte[] bytesLimpos = blobService.extrairBytesLimpos(anexo.getArquivo());
+
+                    email.addAnexo(
+                            new ByteArrayInputStream(bytesLimpos),
+                            nomeArquivo,
+                            mimeType
+                    );
+                } catch (Exception e) {
+                    throw new Exception("Falha ao anexar o arquivo '" + nomeArquivo + "'. Detalhes: " + e.getMessage(), e);
+                }
+            }
+        }
+
+        FilaMsgUtil.enviaEmail(EntityFacadeFactory.getDWFFacade(), email);
+    }
+
 
     /**
      * Busca o código da conta SMTP configurada como padrão no sistema.

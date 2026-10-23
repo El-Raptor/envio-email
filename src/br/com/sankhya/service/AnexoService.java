@@ -19,6 +19,8 @@ import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.List;
 
+import javax.sql.rowset.serial.SerialBlob;
+
 /**
  * Serviço responsável pela gestão de anexos no processo de envio de e-mails.
  *
@@ -48,7 +50,7 @@ public class AnexoService {
      * o nome original do arquivo e seu MIME Type a partir do cabeçalho do BLOB.
      *
      * @param nuEnvio O Número Único (ID) do registro de envio cujos anexos devem ser buscados.
-     * @return Uma lista de objetos {@link Anexo}, contendo os metadados mapeados e a referência bruta ao objeto Blob do banco.
+     * @return Uma lista de objetos {@link Anexo}, com os metadados mapeados e uma cópia em memória (SerialBlob) do conteúdo.
      * @throws Exception Em caso de erro na execução da consulta SQL ou falha na leitura inicial dos objetos BLOB.
      */
     public List<Anexo> buscarAnexos(BigDecimal nuEnvio) throws Exception {
@@ -74,7 +76,10 @@ public class AnexoService {
             while (rs.next()) {
                 Blob arquivo = rs.getBlob("ANEXO");
                 if (arquivo != null) {
-                    arquivos.add(new Anexo(analisador.analisar(arquivo), arquivo));
+                    // Copia o conteúdo para memória ENQUANTO a sessão está aberta.
+                    // O Blob do driver (LOB locator) fica inválido após fechar ResultSet/sessão.
+                    Blob arquivoEmMemoria = new SerialBlob(arquivo.getBytes(1, (int) arquivo.length()));
+                    arquivos.add(new Anexo(analisador.analisar(arquivoEmMemoria), arquivoEmMemoria));
                 }
             }
         } catch (Exception e) {

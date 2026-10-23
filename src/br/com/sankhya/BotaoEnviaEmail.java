@@ -4,24 +4,25 @@ import br.com.sankhya.extensions.actionbutton.AcaoRotinaJava;
 import br.com.sankhya.extensions.actionbutton.ContextoAcao;
 import br.com.sankhya.extensions.actionbutton.Registro;
 import br.com.sankhya.jape.core.JapeSession;
-import br.com.sankhya.jape.vo.DynamicVO;
 import br.com.sankhya.model.Anexo;
+import br.com.sankhya.model.ModeloEmail;
 import br.com.sankhya.service.AnexoService;
 import br.com.sankhya.service.EmailService;
-import br.com.sankhya.ws.ServiceContext;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonObject;
+import br.com.sankhya.service.ModeloEmailQueryService;
 
 import java.math.BigDecimal;
-import java.util.Arrays;
 import java.util.List;
 
 /**
- * Classe responsável por intermediar a ação customizada de envio de e-mails
- * disparada através de um Botão de Ação no sistema Sankhya-W.
+ * Botão de Ação de envio de e-mail.
  *
- * Atua como o Controlador (Controller) da operação, orquestrando as chamadas aos
- * serviços de e-mail e de anexos para montar o registro na Fila de Mensagens (TMDFMG).
+ * Orquestra a montagem do {@link ModeloEmail}, a busca dos anexos e o envio
+ * através da API nativa do Sankhya ({@code FilaMsgUtil}), via {@link EmailService#enviarEmail}.
+ *
+ * Regra do modelo:
+ * 1. CODMODELO preenchido no registro → assunto/corpo/SMTP/remetente vêm da TSIMEM;
+ * 2. CODMODELO vazio → assunto/corpo vêm do próprio registro (ASSUNTO/CORPO);
+ * 3. Sem CODSMTP no modelo → usa a conta SMTP padrão (TSISMTP.PADRAO = 'S').
  *
  * @author Felipe Salles Lopes (felipe.lopes@sankhya.com.br)
  */
@@ -29,84 +30,86 @@ public class BotaoEnviaEmail implements AcaoRotinaJava {
 
     private final EmailService emailService = new EmailService();
     private final AnexoService anexoService = new AnexoService();
+    private final ModeloEmailQueryService modeloEmailQueryService = new ModeloEmailQueryService();
 
-    /**
-     * Ponto de entrada da rotina Java invocada pelo botão de ação.
-     * Realiza a extração dos dados da tela, validações, busca da conta SMTP,
-     * aplicação de modelos de e-mail pré-definidos e delega a criação das entidades
-     * no banco de dados.
-     *
-     * Ao final do processo, injeta um JSON no contexto da requisição com os IDs gerados
-     * e retorna uma mensagem de sucesso na interface do usuário.
-     *
-     * @param ctx O contexto da ação, contendo os registros selecionados na interface (grid/formulário) e ferramentas de query.
-     * @throws Exception Em caso de falha de validação dos dados de entrada, erros de banco de dados ou processamento de anexos.
-     */
     @Override
     public void doAction(ContextoAcao ctx) throws Exception {
         JapeSession.SessionHandle hnd = null;
 
         try {
-            // Abre uma sessão JAPE para garantir que todas as transações da thread ocorram no mesmo contexto
             hnd = JapeSession.open();
 
             // 1. Extração e validação do registro
-            Registro envioEmailIns = Arrays.stream(ctx.getLinhas())
-                    .findFirst()
-                    .orElseThrow(() -> new Exception("Erro: Nenhum registro selecionado para envio."));
+            Registro[] linhas = ctx.getLinhas();
+            if (linhas == null || linhas.length == 0) {
+                throw new Exception("Erro: Nenhum registro selecionado para envio.");
+            }
+            Registro envioEmailIns = linhas[0];
 
-            Object nuEnvioObj = envioEmailIns.getCampo("NUENVIO");
-            if (nuEnvioObj == null) {
+            BigDecimal nuEnvio = (BigDecimal) envioEmailIns.getCampo("NUENVIO");
+            if (nuEnvio == null) {
                 throw new Exception("Erro de validação: O campo NUENVIO está nulo no registro selecionado.");
             }
 
-            BigDecimal nuEnvio = (BigDecimal) nuEnvioObj;
             String assunto = (String) envioEmailIns.getCampo("ASSUNTO");
             String corpo = (String) envioEmailIns.getCampo("CORPO");
-            String emailDest = (String) envioEmailIns.getCampo("DESTINATARIO");
+            String destinatarios = (String) envioEmailIns.getCampo("DESTINATARIO");
             BigDecimal codModelo = (BigDecimal) envioEmailIns.getCampo("CODMODELO");
 
-            if (emailDest == null || emailDest.trim().isEmpty()) {
+            if (destinatarios == null || destinatarios.trim().isEmpty()) {
                 throw new Exception("Erro de validação: O destinatário não foi informado.");
             }
 
-            // 2. Busca Conta SMTP e Modelo de E-mail via Service
-            BigDecimal codSMTP = emailService.buscarContaSMTPPadrao(ctx.getQuery());
+            // 2. Monta o modelo de e-mail
+            ModeloEmail modelo = montarModelo(ctx, codModelo, assunto, corpo);
 
-            if (codModelo != null) {
-                String[] modelo = emailService.buscarModeloEmail(ctx.getQuery(), codModelo);
-                assunto = modelo[0];
-                corpo = modelo[1];
-            }
+            // 3. Busca os anexos (bytes já carregados em memória)
+            List<Anexo> anexos = anexoService.buscarAnexos(nuEnvio);
 
-            // 3. Processamento na Fila de Mensagem
-            DynamicVO filaMensagemVO = emailService.criarFilaMensagem(assunto, corpo, emailDest, codSMTP);
-            BigDecimal codFila = filaMensagemVO.asBigDecimal("CODFILA");
+            // 4. Envia via API nativa (FilaMsgUtil)
+            emailService.enviarEmail(destinatarios.trim(), modelo, anexos);
 
-            // 4. Processamento dos Anexos
-            List<Anexo> arquivos = anexoService.buscarAnexos(nuEnvio);
-            JsonArray jsonArrayAnexos = anexoService.processarEVincularAnexos(arquivos, codFila);
-
-            // 5. Constrói o Response
-            JsonObject jsonResponse = new JsonObject();
-            jsonResponse.addProperty("CODFILA", codFila);
-            jsonResponse.add("ANEXOS_CRIADOS", jsonArrayAnexos);
-
-            // 6. Atualiza o contexto web com o JSON de resposta (se aplicável)
-            ServiceContext serviceCtx = ServiceContext.getCurrent();
-            if (serviceCtx != null) {
-                serviceCtx.setJsonResponse(jsonResponse);
-            }
-
-            // Envia o feedback visual de sucesso para o usuário do Sankhya
-            ctx.setMensagemRetorno("E-mail preparado com sucesso! Cód. Fila: " + codFila);
+            ctx.setMensagemRetorno("E-mail enviado com sucesso! Anexos: " + anexos.size());
 
         } catch (Exception e) {
-            e.printStackTrace(); // Registra o log completo no standalone.log do servidor
-            throw new Exception(e.getMessage()); // Relança a exceção com a mensagem tratada para a interface
+            e.printStackTrace(); // standalone.log
+            throw new Exception(e.getMessage());
         } finally {
-            // Garante o fechamento seguro da sessão JAPE, prevenindo vazamentos de conexão
             JapeSession.close(hnd);
         }
+    }
+
+    /**
+     * Monta o {@link ModeloEmail} a partir da TSIMEM (se houver CODMODELO) ou dos campos
+     * do registro, garantindo uma conta SMTP válida.
+     */
+    private ModeloEmail montarModelo(ContextoAcao ctx, BigDecimal codModelo,
+                                     String assunto, String corpo) throws Exception {
+        ModeloEmail modelo;
+
+        if (codModelo != null) {
+            modelo = modeloEmailQueryService.buscarModelo(codModelo);
+            if (modelo == null) {
+                throw new Exception("Modelo de e-mail não encontrado para CODMODELO " + codModelo + ".");
+            }
+        } else {
+            modelo = new ModeloEmail(
+                    assunto != null ? assunto : "Sem Assunto",
+                    corpo != null ? corpo : "",
+                    null,
+                    null
+            );
+        }
+
+        // Fallback: conta SMTP padrão quando o modelo não define uma
+        if (modelo.getCodSmtp() == null) {
+            BigDecimal codSmtpPadrao = emailService.buscarContaSMTPPadrao(ctx.getQuery());
+            if (codSmtpPadrao == null || BigDecimal.ZERO.compareTo(codSmtpPadrao) == 0) {
+                throw new Exception("Nenhuma conta SMTP informada no modelo e nenhuma conta padrão (TSISMTP.PADRAO = 'S') cadastrada.");
+            }
+            modelo = new ModeloEmail(modelo.getAssunto(), modelo.getConteudo(), codSmtpPadrao, modelo.getCodUsuRemet());
+        }
+
+        return modelo;
     }
 }
